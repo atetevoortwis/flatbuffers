@@ -637,6 +637,12 @@ class CppGenerator : public BaseGenerator {
                             : name;
   }
 
+  static std::string NativeQName(const std::string &name, const StructDef *sd,
+                                const IDLOptions &opts) {
+    return sd && !sd->fixed ? opts.qobject_prefix + name + opts.qobject_suffix
+                            : name;
+  }
+
   const std::string &PtrType(const FieldDef *field) {
     auto attr = field ? field->attributes.Lookup("cpp_ptr_type") : nullptr;
     return attr ? attr->constant : opts_.cpp_object_api_pointer_type;
@@ -1591,6 +1597,52 @@ class CppGenerator : public BaseGenerator {
       code_ += "  {{FIELD_TYPE}}{{FIELD_NAME}};";
     }
   }
+  
+  // Generate a member, including a default value for scalars and raw pointers.
+  void GenQMemberCopy(const FieldDef &field) {
+    if (!field.deprecated &&  // Deprecated fields won't be accessible.
+        field.value.type.base_type != BASE_TYPE_UTYPE &&
+        (field.value.type.base_type != BASE_TYPE_VECTOR ||
+         field.value.type.element != BASE_TYPE_UTYPE)) {
+      auto type = GenTypeNative(field.value.type, false, field);
+      auto cpp_type = field.attributes.Lookup("cpp_type");
+      auto full_type =
+          (cpp_type
+               ? (field.value.type.base_type == BASE_TYPE_VECTOR
+                      ? "std::vector<" +
+                            GenTypeNativePtr(cpp_type->constant, &field,
+                                             false) +
+                            "> "
+                      : GenTypeNativePtr(cpp_type->constant, &field, false))
+               : type + " ");
+      code_.SetValue("FIELD_TYPE", full_type);
+      code_.SetValue("FIELD_NAME", Name(field));
+      code_ += "data.{{FIELD_NAME}} = newval.{{FIELD_NAME}}();";
+    }
+  }
+
+  // Generate a member, including a default value for scalars and raw pointers.
+  void GenQMember(const FieldDef &field) {
+    if (!field.deprecated &&  // Deprecated fields won't be accessible.
+        field.value.type.base_type != BASE_TYPE_UTYPE &&
+        (field.value.type.base_type != BASE_TYPE_VECTOR ||
+         field.value.type.element != BASE_TYPE_UTYPE)) {
+      auto type = GenTypeNative(field.value.type, false, field);
+      auto cpp_type = field.attributes.Lookup("cpp_type");
+      auto full_type =
+          (cpp_type
+               ? (field.value.type.base_type == BASE_TYPE_VECTOR
+                      ? "std::vector<" +
+                            GenTypeNativePtr(cpp_type->constant, &field,
+                                             false) +
+                            "> "
+                      : GenTypeNativePtr(cpp_type->constant, &field, false))
+               : type + " ");
+      code_.SetValue("FIELD_TYPE", full_type);
+      code_.SetValue("FIELD_NAME", Name(field));
+      code_ += "Q_PROPERTY {{FIELD_TYPE}} {{FIELD_NAME}} MEMBER data.{{FIELD_NAME}} NOTIFY {{FIELD_NAME}}Changed);";
+    }
+  }
 
   // Generate the default constructor for this struct. Properly initialize all
   // scalar members with default values.
@@ -1722,6 +1774,35 @@ class CppGenerator : public BaseGenerator {
     code_ += "";
   }
 
+  void GenQtTable(const StructDef &struct_def) {
+    const auto qnative_name = NativeQName(Name(struct_def), &struct_def, opts_);
+    const auto native_name = NativeName(Name(struct_def), &struct_def, opts_);
+    code_.SetValue("STRUCT_NAME", Name(struct_def));
+    code_.SetValue("QNATIVE_NAME", qnative_name);
+    code_.SetValue("NATIVE_NAME", native_name);
+
+    // Generate a C++ object that can hold an unpacked version of this table.
+    code_ += "class {{QNATIVE_NAME}} : public QObject {";
+    code_ += "{{NATIVE_NAME}} data;";
+    GenFullyQualifiedNameGetter(struct_def, native_name);
+    for (auto it = struct_def.fields.vec.begin();
+         it != struct_def.fields.vec.end(); ++it) {
+      GenQMember(**it);
+    }
+    GenOperatorNewDelete(struct_def);
+    GenDefaultConstructor(struct_def);
+
+    code_+= "void Update({{NATIVE_NAME}}& newVal){";
+    for (auto it = struct_def.fields.vec.begin();
+         it != struct_def.fields.vec.end(); ++it) {
+        GenQMemberCopy(**it);
+    }
+    code_ += "};";
+    code_ += "};";
+    if (opts_.gen_compare) GenCompareOperator(struct_def);
+    code_ += "";
+  }
+
   // Generate the code to call the appropriate Verify function(s) for a field.
   void GenVerifyCall(const FieldDef &field, const char *prefix) {
     code_.SetValue("PRE", prefix);
@@ -1824,6 +1905,7 @@ class CppGenerator : public BaseGenerator {
   // Generate an accessor struct, builder structs & function for a table.
   void GenTable(const StructDef &struct_def) {
     if (opts_.generate_object_based_api) { GenNativeTable(struct_def); }
+    if (opts_.generate_qobject_based_api) { GenQtTable(struct_def); }
 
     // Generate an accessor struct, with methods of the form:
     // type name() const { return GetField<type>(offset, defaultval); }

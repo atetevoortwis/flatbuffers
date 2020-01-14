@@ -258,6 +258,8 @@ int FlatCompiler::Compile(int argc, const char **argv) {
         opts.generate_name_strings = true;
       } else if (arg == "--gen-object-api") {
         opts.generate_object_based_api = true;
+      } else if (arg == "--gen-qobject-api") {
+        opts.generate_qobject_based_api = true;
       } else if (arg == "--gen-compare") {
         opts.gen_compare = true;
       } else if (arg == "--cpp-include") {
